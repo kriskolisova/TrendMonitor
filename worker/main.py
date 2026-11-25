@@ -6,6 +6,7 @@ This is the only place in the system where a model is called.
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
 import db
@@ -63,8 +64,12 @@ def ask_model(title, text):
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        content = json.loads(resp.read())["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            content = json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as error:
+        # include the provider's answer, a bare status code hides the real cause
+        raise RuntimeError(f"HTTP {error.code}: {error.read()[:300].decode(errors='replace')}")
     content = (
         content.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
     )
@@ -128,10 +133,32 @@ def retry_failed(conn):
         )
 
 
+def log_key_shape():
+    """Log what the key looks like (never the key itself) to spot paste mistakes."""
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if key is None:
+        db.log(SERVICE, "OPENROUTER_API_KEY не задан")
+        return
+    odd = [
+        name
+        for name, bad in (
+            ("пробелы или перенос строки по краям", key != key.strip()),
+            ("кавычки по краям", key.strip()[:1] in "\"'" or key.strip()[-1:] in "\"'"),
+        )
+        if bad
+    ]
+    db.log(
+        SERVICE,
+        f"OPENROUTER_API_KEY: начало «{key.strip()[:8]}», длина {len(key)}"
+        + (f", подозрительно: {', '.join(odd)}" if odd else ""),
+    )
+
+
 def main():
     conn = db.connect()
     db.init_schema(conn)
     db.log(SERVICE, f"жду новые материалы в базе, модель {MODEL}")
+    log_key_shape()
     last_retry = float("-inf")
     while True:
         try:
